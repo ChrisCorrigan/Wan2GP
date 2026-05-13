@@ -337,23 +337,37 @@ def _attach_lora_preprocessor(transformer: torch.nn.Module) -> None:
         if module_names is None:
             module_names = {name for name, _ in self.named_modules()}
             self._lora_module_names = module_names
+        parameter_names = getattr(self, "_lora_parameter_names", None)
+        if parameter_names is None:
+            parameter_names = {name for name, _ in self.named_parameters()}
+            self._lora_parameter_names = parameter_names
 
         def split_lora_key(lora_key: str) -> tuple[str | None, str]:
             if lora_key.endswith(".alpha"):
-                return lora_key[: -len(".alpha")], ".alpha"
+                module_name = lora_key[: -len(".alpha")]
+                if module_name.endswith(".weight"):
+                    module_name = module_name[: -len(".weight")]
+                return module_name, ".alpha"
             if lora_key.endswith(".diff"):
                 return lora_key[: -len(".diff")], ".diff"
             if lora_key.endswith(".diff_b"):
                 return lora_key[: -len(".diff_b")], ".diff_b"
             if lora_key.endswith(".dora_scale"):
-                return lora_key[: -len(".dora_scale")], ".dora_scale"
+                module_name = lora_key[: -len(".dora_scale")]
+                if module_name.endswith(".weight"):
+                    module_name = module_name[: -len(".weight")]
+                return module_name, ".dora_scale"
             pos = lora_key.rfind(".lora_")
             if pos > 0:
-                return lora_key[:pos], lora_key[pos:]
+                module_name = lora_key[:pos]
+                if module_name.endswith(".weight"):
+                    module_name = module_name[: -len(".weight")]
+                return module_name, lora_key[pos:]
             return None, ""
 
         new_sd = {}
         dropped_keys = []
+        skipped_parameter_keys = []
         for key, value in sd.items():
             original_key = key
             if key.startswith("model."):
@@ -383,12 +397,23 @@ def _attach_lora_preprocessor(transformer: torch.nn.Module) -> None:
                     module_name = f"{prefixed_name}.0"
                 elif prefixed_name in module_names:
                     module_name = prefixed_name
+                elif module_name in parameter_names or f"velocity_model.{module_name}" in parameter_names:
+                    skipped_parameter_keys.append(original_key)
+                    continue
                 else:
                     dropped_keys.append(original_key)
                     continue
             elif module_name.endswith(".to_out") and f"{module_name}.0" in module_names:
                 module_name = f"{module_name}.0"
             new_sd[f"{module_name}{suffix}"] = value
+        if skipped_parameter_keys:
+            sample = ", ".join(skipped_parameter_keys[:8])
+            if len(skipped_parameter_keys) > 8:
+                sample += ", ..."
+            print(
+                f"LTX2 LoRA preprocessing skipped {len(skipped_parameter_keys)} raw-parameter LoRA keys "
+                f"for model '{model_type}' because Wan2GP applies LoRAs to modules only: {sample}"
+            )
         if dropped_keys:
             sample = ", ".join(dropped_keys[:8])
             if len(dropped_keys) > 8:
