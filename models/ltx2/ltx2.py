@@ -363,7 +363,39 @@ def _attach_lora_preprocessor(transformer: torch.nn.Module) -> None:
                 if module_name.endswith(".weight"):
                     module_name = module_name[: -len(".weight")]
                 return module_name, lora_key[pos:]
+            for suffix in (".lora_down.weight", ".lora_up.weight"):
+                if lora_key.endswith(suffix):
+                    return lora_key[: -len(suffix)], suffix
             return None, ""
+
+        def normalize_comfy_lora_key(lora_key: str) -> str:
+            if not lora_key.startswith("lora_unet_"):
+                return lora_key
+            suffix = ""
+            for candidate in (".lora_down.weight", ".lora_up.weight", ".alpha", ".dora_scale"):
+                if lora_key.endswith(candidate):
+                    suffix = candidate
+                    lora_key = lora_key[: -len(candidate)]
+                    break
+            body = lora_key[len("lora_unet_") :]
+            match = re.match(r"transformer_blocks_(\d+)_(.+)$", body)
+            if match is None:
+                return body + suffix
+            block_no, rest = match.groups()
+
+            def normalize_rest(name: str) -> str:
+                ff_match = re.match(r"ff_net_(\d+)_(.+)$", name)
+                if ff_match is not None:
+                    net_no, tail = ff_match.groups()
+                    return f"ff.net.{net_no}.{tail.replace('_', '.')}"
+                for prefix in ("audio_to_video_attn", "video_to_audio_attn", "audio_attn1", "audio_attn2", "attn1", "attn2"):
+                    if name.startswith(prefix + "_"):
+                        tail = name[len(prefix) + 1 :]
+                        tail = re.sub(r"^to_out_(\d+)$", r"to_out.\1", tail)
+                        return f"{prefix}.{tail}"
+                return name.replace("_", ".")
+
+            return f"transformer_blocks.{block_no}.{normalize_rest(rest)}{suffix}"
 
         new_sd = {}
         dropped_keys = []
@@ -386,6 +418,7 @@ def _attach_lora_preprocessor(transformer: torch.nn.Module) -> None:
                 key = f"text_embeddings_connector.{key}"
             if key.startswith("feature_extractor_linear."):
                 key = f"text_embedding_projection.{key[len('feature_extractor_linear.'):]}"
+            key = normalize_comfy_lora_key(key)
 
             module_name, suffix = split_lora_key(key)
             if not module_name:
