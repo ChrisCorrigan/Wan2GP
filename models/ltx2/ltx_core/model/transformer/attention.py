@@ -273,7 +273,9 @@ class Attention(torch.nn.Module):
                 out.add_(x_pos)
                 x_pos = None
                 if self.to_gate_logits is not None:
-                    gate_logits = self.to_gate_logits(gate_input)
+                    gate_weight = getattr(self.to_gate_logits, "weight", None)
+                    gate_dtype = getattr(gate_weight, "dtype", gate_input.dtype)
+                    gate_logits = self.to_gate_logits(gate_input.to(dtype=gate_dtype))
                     gates = 2.0 * torch.sigmoid(gate_logits).to(dtype=out.dtype)
                     out.mul_(gates.unsqueeze(-1))
                 gate_input = None
@@ -291,7 +293,9 @@ class Attention(torch.nn.Module):
             recycle_q= True,
         )
         if self.to_gate_logits is not None:
-            gate_logits = self.to_gate_logits(gate_input)
+            gate_weight = getattr(self.to_gate_logits, "weight", None)
+            gate_dtype = getattr(gate_weight, "dtype", gate_input.dtype)
+            gate_logits = self.to_gate_logits(gate_input.to(dtype=gate_dtype))
             gates = 2.0 * torch.sigmoid(gate_logits).to(dtype=out.dtype)
             out.mul_(gates.unsqueeze(-1))
         gate_input = None
