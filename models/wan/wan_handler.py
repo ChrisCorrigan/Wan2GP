@@ -289,6 +289,9 @@ class family_handler():
 
         if  (test_class_t2v(base_model_type) or vace_class or base_model_type in ["chrono_edit"]) and not test_alpha(base_model_type):
             extra_model_def["vae_upsampler"] = [1,2]
+            if test_class_t2v(base_model_type) and not wan_5B:
+                extra_model_def["vae_upsamplers"] = {"qwen_vae_pid(1.5)": [1]}
+                extra_model_def["excluded_spatial_upsamplers"] = ["qwen_pid(1.5)"]
         extra_model_def["vae_block_size"] = 32 if test_wan_5B(base_model_type) or base_model_type in ["scail"] or scail2 else 16
 
         extra_model_def["profiles_dir"] = profiles_dir if isinstance(profiles_dir, list) else [profiles_dir]
@@ -530,8 +533,9 @@ class family_handler():
                 "scale": 3,
                 "show_label": True,
             }
-            extra_model_def["fake_start_image"] = True
-            extra_model_def["fit_into_canvas_image_refs"] = 0            
+            if scail2:
+                extra_model_def["fake_start_image"] = True
+                extra_model_def["fit_into_canvas_image_refs"] = 0            
             extra_model_def["preprocess_all"] = preprocess_all_scail2 if scail2 else True
             extra_model_def["custom_preprocessor"] = "Preparing Scail2 Inputs" if scail2 else "Extracting 3D Pose (NLFPose)"
             extra_model_def["forced_guide_mask_inputs"] = True
