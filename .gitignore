@@ -81,6 +81,7 @@ loras_url_cache_v2.json
 /tmp/
 /temp/
 /logs/
+/.run/
 /settings/
 /finetunes/
 /profiles_local/
