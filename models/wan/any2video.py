@@ -559,7 +559,7 @@ class WanAny2V:
         if self._interrupt:
             return None
         # Text Encoder
-        kiwi_edit = model_type in ["kiwi_edit"]        
+        kiwi_edit = model_type in ["kiwi_edit"]
         bernini = model_def.get("bernini_class", False)
         shotplan = model_def.get("shotplan", False)
         if n_prompt == "":
