@@ -24,6 +24,26 @@ This foreground command streams `logs/wan2gp.log`. For unattended startup use `.
 ./scripts/start-wan2gp.sh --stop
 ```
 
+### Clearing generated and uploaded media
+
+The pod has no Jupyter recycle bin: this cleanup is permanent. First stop Wan2GP,
+then inspect the cleanup targets (dry run):
+
+```bash
+./scripts/start-wan2gp.sh --stop
+./scripts/clean-wan2gp-media.sh
+```
+
+When the displayed locations are correct, permanently remove all generated media
+from `outputs/` and all Gradio upload/cache files from `/tmp/gradio`:
+
+```bash
+./scripts/clean-wan2gp-media.sh --delete
+```
+
+The script does not touch models, LoRAs, source code, settings, logs, or unrelated
+files in `/tmp`.
+
 `check-wan2gp.sh` exits `0` healthy, `1` missing process, `2` unavailable port, `3` failed HTTP health, and `4` configuration/check capability error. It reads cgroup v1 or v2 memory limits rather than trusting `free -h`, and warns at 90% by default (`WAN2GP_MEMORY_WARN_PERCENT` can override it). It does not change the selected lower-memory 32 GB RAM / 24 GB VRAM profile or kill processes for high memory.
 
 ### Automatic pod startup
