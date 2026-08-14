@@ -12,12 +12,11 @@ LOG_DIR="$ROOT_DIR/logs"
 LOG_FILE="$LOG_DIR/wan2gp.log"
 MODE="foreground"
 TIMEOUT_SECONDS="${WAN2GP_START_TIMEOUT:-90}"
-# The Hugging Face Xet client can fail on large checkpoint writes on network
-# volumes. Use the regular resumable HTTP downloader unless explicitly changed.
-HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
-# H3's very large text-encoder shards exceed the regular HTTP downloader's
-# size limit, so use Hugging Face Transfer for those writes instead.
-HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
+# H3's checkpoints exceed the regular HTTP downloader's size limit. The
+# network-volume quota has been raised, so use Xet rather than hf_transfer:
+# Xet provides resumable large-file downloads and is more reliable here.
+HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-0}"
+HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-0}"
 export HF_HUB_DISABLE_XET HF_HUB_ENABLE_HF_TRANSFER
 
 usage() { echo "Usage: $0 [--background | --status | --stop]"; }
