@@ -12,6 +12,10 @@ LOG_DIR="$ROOT_DIR/logs"
 LOG_FILE="$LOG_DIR/wan2gp.log"
 MODE="foreground"
 TIMEOUT_SECONDS="${WAN2GP_START_TIMEOUT:-90}"
+# The Hugging Face Xet client can fail on large checkpoint writes on network
+# volumes. Use the regular resumable HTTP downloader unless explicitly changed.
+HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
+export HF_HUB_DISABLE_XET
 
 usage() { echo "Usage: $0 [--background | --status | --stop]"; }
 pid_is_wan2gp() {
