@@ -127,7 +127,7 @@ pip install flash-attn==2.7.2.post1
 
 ## GGUF llama.cpp CUDA Kernels
 
-These kernels are used to accelerate GGUF models. 
+These kernels are used to accelerate GGUF models.
 
 ### GGUF Kernels Wheels for Python 3.11 / Pytorch 2.10 / Cuda 13
 
