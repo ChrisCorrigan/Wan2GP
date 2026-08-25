@@ -22,7 +22,7 @@ _FUNCTION_TAG_RE = re.compile(r"<function(?:=|\s+name=)([^\s>]+)[^>]*>(.*?)</fun
 _FUNCTION_START_RE = re.compile(r"<function(?:=|\s+name=)([^\s>]+)[^>]*>", flags=re.IGNORECASE)
 _PARAM_TAG_RE = re.compile(r"<parameter(?:=|\s+name=)([^\s>]+)[^>]*>(.*?)</parameter>", flags=re.DOTALL | re.IGNORECASE)
 _GENERIC_PARAM_TAG_RE = re.compile(r"<([A-Za-z_][A-Za-z0-9_]*)>\s*(.*?)\s*</(?:parameter|\1)>", flags=re.DOTALL | re.IGNORECASE)
-_ASSISTANT_CONTINUATION_PREFILL_CHUNK_TOKENS = 1000
+_ASSISTANT_PREFILL_CHUNK_TOKENS = 1024
 
 
 @dataclass(slots=True)
@@ -73,6 +73,20 @@ def render_tool_turn_suffix(tokenizer, tool_contents: list[str], thinking_enable
     return [int(token_id) for token_id in token_ids]
 
 
+def render_assistant_text_suffix(tokenizer, assistant_content: str, thinking_enabled: bool, prompt_open: bool) -> list[int]:
+    assistant_content = str(assistant_content or "").strip()
+    if len(assistant_content) == 0:
+        return []
+    if prompt_open:
+        suffix = ("</think>\n\n" if bool(thinking_enabled) else "") + assistant_content + "<|im_end|>\n"
+    else:
+        suffix = f"<|im_start|>assistant\n<think>\n\n</think>\n\n{assistant_content}<|im_end|>\n"
+    token_ids = tokenizer.encode(suffix, add_special_tokens=False)
+    if torch.is_tensor(token_ids):
+        token_ids = token_ids.tolist()
+    return [int(token_id) for token_id in token_ids]
+
+
 def strip_tool_blocks(raw_text: str) -> str:
     return _TOOL_BLOCK_RE.sub("\n", str(raw_text or "")).strip()
 
@@ -88,7 +102,7 @@ def _clean_tag_name(name: str) -> str:
     return name
 
 
-def _parse_tagged_tool_call(payload: str, allow_incomplete_function: bool = False) -> dict[str, Any] | None:
+def _parse_tagged_tool_call(payload: str, allow_incomplete_function: bool = False, tool_parameters: dict[str, set[str]] | None = None) -> dict[str, Any] | None:
     function_match = _FUNCTION_TAG_RE.search(str(payload or ""))
     function_body = ""
     matched_closed_function = function_match is not None
@@ -103,25 +117,29 @@ def _parse_tagged_tool_call(payload: str, allow_incomplete_function: bool = Fals
         function_body = str(payload or "")[function_start_match.end():]
     if len(name) == 0:
         return None
+    allowed_parameters = None if tool_parameters is None else tool_parameters.get(name, set())
     arguments = {}
-    for param_name, param_value in _PARAM_TAG_RE.findall(function_body):
+    for match in _PARAM_TAG_RE.finditer(function_body):
+        param_name, param_value = match.groups()
         clean_name = _clean_tag_name(param_name)
         clean_value = str(param_value or "").strip()
-        if len(clean_name) == 0:
+        if len(clean_name) == 0 or allowed_parameters is not None and clean_name not in allowed_parameters:
             continue
         try:
             arguments[clean_name] = json.loads(clean_value)
         except Exception:
             arguments[clean_name] = clean_value
-    for param_name, param_value in _GENERIC_PARAM_TAG_RE.findall(function_body):
-        clean_name = _clean_tag_name(param_name)
-        clean_value = str(param_value or "").strip()
-        if len(clean_name) == 0 or clean_name.lower() in {"function", "parameter"} or clean_name in arguments:
-            continue
-        try:
-            arguments[clean_name] = json.loads(clean_value)
-        except Exception:
-            arguments[clean_name] = clean_value
+    if allowed_parameters is not None:
+        generic_body = _PARAM_TAG_RE.sub("", function_body)
+        for param_name, param_value in _GENERIC_PARAM_TAG_RE.findall(generic_body):
+            clean_name = _clean_tag_name(param_name)
+            clean_value = str(param_value or "").strip()
+            if clean_name not in allowed_parameters or clean_name in arguments:
+                continue
+            try:
+                arguments[clean_name] = json.loads(clean_value)
+            except Exception:
+                arguments[clean_name] = clean_value
     if not matched_closed_function and (not allow_incomplete_function or len(arguments) == 0):
         return None
     return {"name": name, "arguments": arguments}
@@ -161,17 +179,17 @@ def _extract_bare_json_tool_call(text: str) -> tuple[dict[str, Any] | None, tupl
     return None, None
 
 
-def _extract_inline_tool_call(text: str, allow_incomplete_function: bool = False) -> tuple[dict[str, Any] | None, tuple[int, int] | None]:
+def _extract_inline_tool_call(text: str, allow_incomplete_function: bool = False, tool_parameters: dict[str, set[str]] | None = None) -> tuple[dict[str, Any] | None, tuple[int, int] | None]:
     candidate = strip_trailing_stop_markup(str(text or "")).strip()
     if len(candidate) == 0:
         return None, None
-    tagged_tool_call = _parse_tagged_tool_call(candidate, allow_incomplete_function=allow_incomplete_function)
+    tagged_tool_call = _parse_tagged_tool_call(candidate, allow_incomplete_function=allow_incomplete_function, tool_parameters=tool_parameters)
     if tagged_tool_call is not None:
         return tagged_tool_call, (0, len(candidate))
     return _extract_bare_json_tool_call(candidate)
 
 
-def extract_tool_calls(raw_text: str) -> list[dict[str, Any]]:
+def extract_tool_calls(raw_text: str, tool_parameters: dict[str, set[str]] | None = None) -> list[dict[str, Any]]:
     tool_calls = []
     source_text = str(raw_text or "")
     for match in _TOOL_CALL_RE.finditer(source_text):
@@ -181,19 +199,19 @@ def extract_tool_calls(raw_text: str) -> list[dict[str, Any]]:
         try:
             parsed = json.loads(payload)
         except Exception:
-            parsed = _parse_tagged_tool_call(payload)
+            parsed = _parse_tagged_tool_call(payload, tool_parameters=tool_parameters)
         tool_call = _normalize_tool_call_dict(parsed)
         if tool_call is None:
             continue
         tool_calls.append(tool_call)
     if len(tool_calls) > 0:
         return tool_calls
-    inline_tool_call, _inline_span = _extract_inline_tool_call(source_text, allow_incomplete_function=True)
+    inline_tool_call, _inline_span = _extract_inline_tool_call(source_text, allow_incomplete_function=True, tool_parameters=tool_parameters)
     if inline_tool_call is not None:
         tool_calls.append(inline_tool_call)
         return tool_calls
     _thinking_text, answer_text = qwen35_text._split_generated_text(source_text)
-    inline_tool_call, _inline_span = _extract_inline_tool_call(answer_text, allow_incomplete_function=True)
+    inline_tool_call, _inline_span = _extract_inline_tool_call(answer_text, allow_incomplete_function=True, tool_parameters=tool_parameters)
     if inline_tool_call is not None:
         tool_calls.append(inline_tool_call)
     return tool_calls
@@ -400,18 +418,23 @@ class Qwen35AssistantRuntime:
         if len(normalized_token_ids) == 0:
             raise ValueError("Cannot prefill assistant context with an empty token sequence.")
         _engine, llm = self._ensure_clean_runtime(max_context_tokens=len(normalized_token_ids), max_new_tokens=1, seed=seed)
-        seq = Sequence(normalized_token_ids, SamplingParams(max_tokens=1, ignore_eos=True))
+        initial_token_ids = normalized_token_ids[:_ASSISTANT_PREFILL_CHUNK_TOKENS]
+        seq = Sequence(initial_token_ids, SamplingParams(max_tokens=1, ignore_eos=True))
         llm.scheduler.add(seq)
         scheduled, is_prefill = llm.scheduler.schedule()
         if not scheduled or not is_prefill:
             raise RuntimeError("Assistant context prefill did not schedule a prefill batch.")
-        llm.model_runner.call("run", scheduled, is_prefill)
+        if bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False)):
+            llm.model_runner.call("prefill_mtp_only", scheduled)
+        else:
+            llm.model_runner.call("run", scheduled, is_prefill)
         seq = scheduled[0]
+        seq = self._chunk_prefill_suffix(seq, normalized_token_ids[len(initial_token_ids):])
         self._seal_sequence(seq)
         self._log(f"Primed assistant context with {len(normalized_token_ids)} tokens.")
         return seq
 
-    def _chunk_prefill_suffix(self, seq: Sequence, token_ids: list[int]) -> Sequence:
+    def _chunk_prefill_suffix(self, seq: Sequence, token_ids: list[int], chunk_tokens: int = _ASSISTANT_PREFILL_CHUNK_TOKENS) -> Sequence:
         suffix = [int(token_id) for token_id in list(token_ids or [])]
         if len(suffix) == 0:
             return seq
@@ -425,9 +448,9 @@ class Qwen35AssistantRuntime:
         seq.max_tokens = max(int(original_max_tokens), int(seq.num_completion_tokens or 0) + len(suffix) + 8)
         try:
             total_suffix_tokens = len(suffix)
-            total_chunks = (total_suffix_tokens + _ASSISTANT_CONTINUATION_PREFILL_CHUNK_TOKENS - 1) // _ASSISTANT_CONTINUATION_PREFILL_CHUNK_TOKENS
-            for chunk_index, chunk_start in enumerate(range(0, total_suffix_tokens, _ASSISTANT_CONTINUATION_PREFILL_CHUNK_TOKENS), start=1):
-                chunk = suffix[chunk_start : chunk_start + _ASSISTANT_CONTINUATION_PREFILL_CHUNK_TOKENS]
+            total_chunks = (total_suffix_tokens + chunk_tokens - 1) // chunk_tokens
+            for chunk_index, chunk_start in enumerate(range(0, total_suffix_tokens, chunk_tokens), start=1):
+                chunk = suffix[chunk_start : chunk_start + chunk_tokens]
                 old_num_tokens = int(seq.num_tokens)
                 seq.token_ids.extend(chunk)
                 seq.last_token = int(seq.token_ids[-1])
@@ -440,7 +463,10 @@ class Qwen35AssistantRuntime:
                     raise RuntimeError("Assistant chunk prefill exceeded the available KV cache blocks.")
                 llm.scheduler.block_manager.begin_prompt_append(seq, old_num_tokens)
                 seq.num_cached_tokens = old_num_tokens
-                llm.model_runner.call("prefill_only", [seq])
+                if bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False)):
+                    llm.model_runner.call("prefill_mtp_suffix", [seq], old_num_tokens)
+                else:
+                    llm.model_runner.call("prefill_only", [seq])
                 llm.scheduler.block_manager.finalize_prompt_append(seq, old_num_tokens)
                 seq.num_cached_tokens = seq.num_tokens
                 self._log(
@@ -550,7 +576,7 @@ class Qwen35AssistantRuntime:
                 self._log("Embedded decode finished without an active assistant snapshot; releasing runtime allocations.")
                 engine.release_runtime_allocations()
 
-    def start_generation_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool) -> Sequence:
+    def start_generation_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continue_existing_completion: bool = False) -> tuple[Sequence, int]:
         seq = self._get_active_sequence()
         if seq is None:
             raise RuntimeError("Assistant context is not initialized.")
@@ -573,8 +599,10 @@ class Qwen35AssistantRuntime:
                 f"new={budget_info['effective_new_tokens']}/{budget_info['requested_new_tokens']} "
                 f"thinking_extra={budget_info['effective_runtime_extra']}/{budget_info['requested_runtime_extra']}."
             )
-        seq.num_prompt_tokens = seq.num_tokens
-        seq.max_tokens = sampling_params.max_tokens
+        existing_completion_tokens = int(seq.num_completion_tokens) if continue_existing_completion else 0
+        if not continue_existing_completion:
+            seq.num_prompt_tokens = seq.num_tokens
+        seq.max_tokens = existing_completion_tokens + int(sampling_params.max_tokens)
         seq.temperature = sampling_params.temperature
         seq.ignore_eos = True
         seq.top_k = sampling_params.top_k
@@ -585,50 +613,58 @@ class Qwen35AssistantRuntime:
         seq.logits_processor_update_state = sampling_params.logits_processor_update_state
         seq.logits_bias = sampling_params.logits_bias
         llm.model_runner.call("set_sampling_seed", sampling_params.seed)
-        return seq
+        return seq, int(sampling_params.max_tokens)
 
-    def generate_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0) -> AssistantDecodeResult:
-        seq = self.start_generation_segment(max_new_tokens=max_new_tokens, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled)
-        requested_segment_tokens = max(0, int(seq.max_tokens or 0))
-        seq.max_tokens = max(int(seq.max_tokens or 0), requested_segment_tokens + 1)
+    def generate_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continue_existing_completion: bool = False) -> AssistantDecodeResult:
+        seq, requested_segment_tokens = self.start_generation_segment(max_new_tokens=max_new_tokens, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continue_existing_completion=continue_existing_completion)
+        existing_completion_tokens = int(seq.num_completion_tokens)
+        requested_segment_tokens = max(0, int(requested_segment_tokens))
+        seq.max_tokens = max(int(seq.max_tokens or 0), existing_completion_tokens + requested_segment_tokens + 1)
         stop_token_ids = {int(token_id) for token_id in getattr(self.model, "_prompt_enhancer_stop_token_ids", []) or [] if int(token_id) >= 0}
+        speculative = bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False))
+        if speculative:
+            seq.speculative_stop_token_ids = stop_token_ids
         stream_emitter = ThrottledStreamEmitter(stream_interval_seconds) if callable(stream_callback) else None
         raw_text = ""
-        for step_no in range(requested_segment_tokens):
+        generated_tokens = 0
+        while generated_tokens < requested_segment_tokens:
             if callable(stop_requested) and stop_requested():
                 if stream_emitter is not None:
-                    stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=step_no, stop_reason="interrupted", is_final=True, force=True)
-                return AssistantDecodeResult(raw_text=raw_text, stop_reason="interrupted", token_count=step_no)
+                    stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason="interrupted", is_final=True, force=True)
+                return AssistantDecodeResult(raw_text=raw_text, stop_reason="interrupted", token_count=generated_tokens)
             llm = self._get_live_llm()
             if len(seq.token_ids) >= int(llm.config.max_model_len):
                 if stream_emitter is not None:
-                    stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=step_no, stop_reason="context_limit", is_final=True, force=True)
-                return AssistantDecodeResult(raw_text=raw_text, stop_reason="context_limit", token_count=step_no)
+                    stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason="context_limit", is_final=True, force=True)
+                return AssistantDecodeResult(raw_text=raw_text, stop_reason="context_limit", token_count=generated_tokens)
             try:
                 scheduled, is_prefill = llm.scheduler.schedule()
             except AssertionError:
                 if len(seq.token_ids) >= int(llm.config.max_model_len):
                     if stream_emitter is not None:
-                        stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=step_no, stop_reason="context_limit", is_final=True, force=True)
-                    return AssistantDecodeResult(raw_text=raw_text, stop_reason="context_limit", token_count=step_no)
+                        stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason="context_limit", is_final=True, force=True)
+                    return AssistantDecodeResult(raw_text=raw_text, stop_reason="context_limit", token_count=generated_tokens)
                 raise
+            if speculative:
+                scheduled[0].speculative_max_emission = requested_segment_tokens - generated_tokens
             sampled_token_ids = llm.model_runner.call("run", scheduled, is_prefill)
-            llm.scheduler.postprocess(scheduled, sampled_token_ids)
+            emitted_tokens = llm.scheduler.postprocess(scheduled, sampled_token_ids)
             seq = scheduled[0]
+            generated_tokens += emitted_tokens
             raw_text = self.tokenizer.decode(seq.completion_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
-            last_token_id = int(sampled_token_ids[0])
+            sampled_tokens = sampled_token_ids[0] if isinstance(sampled_token_ids[0], list) else [sampled_token_ids[0]]
+            last_token_id = int(sampled_tokens[-1])
             if stream_emitter is not None:
-                stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=step_no + 1, stop_reason=None, is_final=False)
+                stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason=None, is_final=False)
             if has_complete_tool_call(raw_text):
                 if stream_emitter is not None:
-                    stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=step_no + 1, stop_reason="tool_call", is_final=True, force=True)
-                return AssistantDecodeResult(raw_text=raw_text, stop_reason="tool_call", token_count=step_no + 1, stop_token_id=last_token_id)
+                    stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason="tool_call", is_final=True, force=True)
+                return AssistantDecodeResult(raw_text=raw_text, stop_reason="tool_call", token_count=generated_tokens, stop_token_id=last_token_id)
             if last_token_id in stop_token_ids:
                 if stream_emitter is not None:
-                    stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=step_no + 1, stop_reason="stop_token", is_final=True, force=True)
-                return AssistantDecodeResult(raw_text=raw_text, stop_reason="stop_token", token_count=step_no + 1, stop_token_id=last_token_id)
-        self._seal_sequence(seq)
-        seq.max_tokens = requested_segment_tokens
+                    stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason="stop_token", is_final=True, force=True)
+                return AssistantDecodeResult(raw_text=raw_text, stop_reason="stop_token", token_count=generated_tokens, stop_token_id=last_token_id)
+        seq.max_tokens = existing_completion_tokens + requested_segment_tokens
         raw_text = self.tokenizer.decode(seq.completion_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
         if stream_emitter is not None:
             stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=requested_segment_tokens, stop_reason="max_tokens", is_final=True, force=True)
@@ -675,14 +711,16 @@ class Qwen35AssistantRuntime:
                 "free_block_ids": [int(block_id) for block_id in llm.scheduler.block_manager.free_block_ids],
                 "used_block_ids": [int(block_id) for block_id in llm.scheduler.block_manager.used_block_ids],
             },
-            "kv_cache": None if not hasattr(runner, "kv_cache") else runner.kv_cache.detach().to("cpu").clone(),
+            "kv_cache": None if not hasattr(runner, "kv_cache") else runner.kv_cache.detach().to("cpu").as_subclass(torch.Tensor).clone(),
+            "kv_cache_scales": None if not hasattr(runner, "kv_cache_scales") else runner.kv_cache_scales.detach().to("cpu").as_subclass(torch.Tensor).clone(),
             "linear_states": [
                 {
-                    "conv": module.conv_state_buffer.detach().to("cpu").clone(),
-                    "recurrent": module.recurrent_state_buffer.detach().to("cpu").clone(),
+                    "conv": module.conv_state_buffer.detach().to("cpu").as_subclass(torch.Tensor).clone(),
+                    "recurrent": module.recurrent_state_buffer.detach().to("cpu").as_subclass(torch.Tensor).clone(),
                 }
                 for module in linear_modules
             ],
+            "speculative_state": runner.snapshot_speculative_state(seq.seq_id) if bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False)) else None,
         }
         self._log(
             f"Snapshotted assistant context with {len(seq.token_ids)} tokens. "
@@ -730,6 +768,11 @@ class Qwen35AssistantRuntime:
             raise RuntimeError("Assistant KV cache snapshot shape does not match current runtime.")
         with torch.inference_mode():
             runner.kv_cache.copy_(kv_cache.to(device=runner.kv_cache.device, dtype=runner.kv_cache.dtype))
+            if hasattr(runner, "kv_cache_scales"):
+                kv_cache_scales = snapshot.get("kv_cache_scales")
+                if kv_cache_scales is None or tuple(kv_cache_scales.shape) != tuple(runner.kv_cache_scales.shape):
+                    raise RuntimeError("Assistant KV cache scale snapshot does not match current runtime.")
+                runner.kv_cache_scales.copy_(kv_cache_scales.to(device=runner.kv_cache_scales.device, dtype=runner.kv_cache_scales.dtype))
         linear_modules = self._get_linear_state_modules()
         linear_states = snapshot.get("linear_states", [])
         if len(linear_modules) != len(linear_states):
@@ -772,6 +815,11 @@ class Qwen35AssistantRuntime:
         else:
             restored_seq.status = SequenceStatus.RUNNING
             llm.scheduler.running.append(restored_seq)
+        if bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False)):
+            speculative_state = snapshot.get("speculative_state")
+            if speculative_state is None:
+                raise RuntimeError("Assistant snapshot does not contain predictive decoder state.")
+            runner.restore_speculative_state(restored_seq.seq_id, speculative_state)
         llm.scheduler.block_manager.normalize_tail_after_prefill(restored_seq)
         self._log(
             f"Restored assistant context with {len(restored_seq.token_ids)} tokens. "
