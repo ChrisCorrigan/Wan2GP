@@ -2,7 +2,7 @@
 
 This guide covers manual installation for different GPU generations and operating systems. Alternatively you may use the 1 click install / update scripts (please check the repo readme for instructions).
 
-It is recommended to use Python 3.10.9, PyTorch 2.7.1 with Cuda 12.8 for GTX 10XX and Python 3.11.14, PyTorch 2.10 with Cuda 13.0/13.1 for RTX 30XX - RTX 50XX as both these configs are well-tested and stable.
+It is recommended to use Python 3.10.9, PyTorch 2.7.1 with Cuda 12.8 for GTX 10XX and Python 3.11.14, PyTorch 2.10 with Cuda 13.0/13.1 for RTX 20XX - RTX 50XX as both these configs are well-tested and stable.
 
 It is not recommended to use either PytTorch 2.8.0 as some System RAM memory leaks have been observed when switching models or 2.9.0 which has some Convolution 3D perf issues (VAE VRAM requirements explode).
 
@@ -40,6 +40,12 @@ pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https
 pip install -r requirements.txt
 ```
 
+## Optional DLSS 5 upsamplers
+
+WanGP can expose NVIDIA DLSS 5 Neural Rendering as a native-resolution refiner or spatial upsampler, and DLSS Frame Generation as a temporal upsampler. These optional Windows components are not installed by the normal WanGP installer and include closed-source third-party binaries with separate licenses and security implications. Close WanGP and run `scripts\install_dlss5.bat` for the checksum-verified automatic installation.
+
+Read the full **[DLSS 5 runtime installation, directory layout, copyright, and safety instructions](DLSS5.md)** before downloading or running them. The WanGP worker release ZIP is extracted into the root `dlss5` folder; the guide provides version-pinned downloads for the tested community components and identifies which files are modified, unsigned, or unavailable from NVIDIA's public SDK.
+
 
 ## Triton Installation
 The Triton library is required for Pytorch compilation and Sage Attention and by various kernels to accelerate tensors processing.
@@ -58,30 +64,34 @@ pip install triton-windows
 Triton library should be automatically installed when installing pytorch.
 
 ## Sage Attention
-Sage Attention accelerates a Video / Image Generation up to x2 with very little quality loss. Sage doesnt support GTX 10xx.
+Sage Attention accelerates Video / Image Generation up to x2 with very little quality loss. Sage does not support GTX 10XX in WanGP.
 
-#### Windows Install Sage Attention for RTX 30XX Only
-Only Sage attention 1 is supported for these GPUs 
+Use the version matching your GPU generation:
+
+- **RTX 20XX (Turing):** SageAttention 1.0.6. SageAttention 2 is not supported.
+- **RTX 30XX or newer (Ampere, Ada, and Blackwell):** SageAttention 2.2.0.
+
+#### Windows: Install SageAttention 1 for RTX 20XX
 ```
 pip install sageattention==1.0.6
 ```
-#### Windows Install Sage2 Attention for RTX 40XX-50xx 
+
+#### Windows: Install SageAttention 2 for RTX 30XX-50XX
 ```
 pip install https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post4/sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl
 ```
 
-#### Linux Install Sage Attention for RTX 30XX Only
-Only Sage attention 1 is supported for these GPUs 
+#### Linux: Install SageAttention 1 for RTX 20XX
 ```
 pip install sageattention==1.0.6
 ```
 
-#### Linux Install Sage Attention for RTX 40XX, 50XX Only. Make sure it's Sage 2.2.0
+#### Linux: Install SageAttention 2 for RTX 30XX-50XX
 ```
 python -m pip install "setuptools<=75.8.2" --force-reinstall
 git clone https://github.com/thu-ml/SageAttention
 cd SageAttention 
-pip install -e .
+pip install --no-build-isolation -e .
 ```
 
 ## Sparge Attention
@@ -127,30 +137,30 @@ pip install flash-attn==2.7.2.post1
 
 ## GGUF llama.cpp CUDA Kernels
 
-These kernels are used to accelerate GGUF models. Wheel 1.0.11 provides optimized FP16/BF16 modes, CUDA-graph-safe Stream-K, and quantized KV-cache attention on Windows and Linux.
+These kernels are used to accelerate GGUF models. Wheel 1.0.14 provides optimized FP16/BF16 modes, CUDA-graph-safe Stream-K, quantized KV-cache attention, and the MMQ activation-tile safety fix required by speculative CUDA-graph workloads on Windows and Linux.
 
 ### GGUF Kernels Wheels for Python 3.11 / Pytorch 2.10 / Cuda 13
 
 - Windows
    ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.11+torch210cu130py311-cp311-cp311-win_amd64.whl
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.14+torch210cu130py311-cp311-cp311-win_amd64.whl
    ```
 
 - Linux
    ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.11+torch210cu130py311-cp311-cp311-linux_x86_64.whl
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.14+torch210cu130py311-cp311-cp311-linux_x86_64.whl
    ```
 
 ### GGUF Kernels Wheels for Python 3.10 / Pytorch 2.7.1 / Cuda 12.8
 
 - Windows
    ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.11+torch271cu128py310-cp310-cp310-win_amd64.whl
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.14+torch271cu128py310-cp310-cp310-win_amd64.whl
    ```
 
 - Linux
    ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.11+torch271cu128py310-cp310-cp310-linux_x86_64.whl
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.14+torch271cu128py310-cp310-cp310-linux_x86_64.whl
    ```
 
 ### FP16/BF16 matmul modes
@@ -183,7 +193,7 @@ python wgp.py
 
 The setting is read when the kernel package loads. If it is changed inside an already-running Python process, call `llamacpp_gguf_cuda.refresh_env()` before the next generation. Set `WGP_GGUF_LLAMACPP_CUDA_BF16_FP16=1` only to restore the legacy behavior that computes automatic BF16 requests through FP16 cuBLAS. To disable the GGUF CUDA package entirely, set `WGP_GGUF_LLAMACPP_CUDA=0` before starting WanGP.
 
-### Stream-K and CUDA graphs (wheel 1.0.11+)
+### Stream-K and CUDA graphs (wheel 1.0.14+)
 
 Stream-K is enabled by default and reuses a persistent 16 MiB workspace, so it does not allocate memory while a CUDA graph is being recorded. Set `WGP_GGUF_LLAMACPP_CUDA_STREAM_K=0` to disable Stream-K without disabling the rest of the GGUF kernels. Set `WGP_GGUF_LLAMACPP_CUDA_STREAM_K_BUFFER_MB` to change the workspace size; `0` also disables Stream-K.
 

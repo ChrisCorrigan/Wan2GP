@@ -68,6 +68,8 @@ def _check_triton():
         import triton.language as tl  # noqa: F401
     except Exception as exc:
         return False, f"Triton import failed: {exc}"
+    from shared.kernels.triton_compilation_log import install_triton_compilation_logger
+    install_triton_compilation_logger()
     if _env_enabled("WGP_VLLM_TRITON_SMOKE", default=True):
         smoke_ok, smoke_msg = _check_triton_runtime_smoke()
         if not smoke_ok:
@@ -237,14 +239,14 @@ class NanoVllmTextEngine:
         self._max_num_batched_tokens_hint = max_num_batched_tokens
         self.close()
 
-    def reserve_runtime(self, prompt_len: int, max_tokens: int, cfg_scale: float, num_seqs: int = 1):
+    def reserve_runtime(self, prompt_len: int, max_tokens: int, cfg_scale: float, num_seqs: int = 1, min_model_len: int | None = None):
         req_model_len, req_num_seqs, req_num_batched = self._compute_runtime_hints(
             prompt_len=prompt_len,
             max_tokens=max_tokens,
             cfg_scale=cfg_scale,
             num_seqs=num_seqs,
         )
-        req_model_len = max(req_model_len, self._get_min_model_len_hint())
+        req_model_len = max(req_model_len, self._get_min_model_len_hint() if min_model_len is None else int(min_model_len))
         req_num_batched = max(req_num_batched, req_model_len * req_num_seqs)
         self._ensure_runtime_capacity(req_model_len, req_num_seqs, req_num_batched)
 
